@@ -1,5 +1,3 @@
-# python.py
-
 import streamlit as st
 import pandas as pd
 from google import genai
@@ -12,6 +10,38 @@ st.set_page_config(
 )
 
 st.title("Ứng dụng Phân Tích Báo Cáo Tài Chính 📊")
+
+# ************************* BỔ SUNG: KHỞI TẠO CHAT VÀ CLIENT *************************
+
+# Lấy Khóa API từ Streamlit Secrets
+API_KEY = st.secrets.get("GEMINI_API_KEY")
+
+# Khởi tạo Client và Chat Session nếu có API Key
+if API_KEY:
+    try:
+        # Khởi tạo Client chung
+        client = genai.Client(api_key=API_KEY)
+
+        # 1. Khởi tạo Lịch sử Chat
+        if "messages" not in st.session_state:
+            st.session_state["messages"] = [
+                {"role": "assistant", "content": "Chào bạn! Tôi là Gemini, chuyên gia phân tích tài chính. Bạn có thể hỏi tôi bất kỳ câu hỏi nào về báo cáo tài chính."}
+            ]
+
+        # 2. Khởi tạo Chat Session (để giữ ngữ cảnh hội thoại)
+        if "chat_session" not in st.session_state:
+            # Sử dụng gemini-2.5-flash cho tốc độ và hiệu quả
+            st.session_state["chat_session"] = client.chats.create(model="gemini-2.5-flash")
+
+    except Exception as e:
+        st.error(f"Lỗi khởi tạo Gemini Client: {e}. Vui lòng kiểm tra lại API Key.")
+        # Đặt client là None nếu lỗi để tránh lỗi phát sinh sau này
+        client = None
+else:
+    st.warning("⚠️ Vui lòng cấu hình Khóa API 'GEMINI_API_KEY' trong Streamlit Secrets để sử dụng chức năng AI.")
+    client = None
+
+# *********************** KẾT THÚC BỔ SUNG KHỞI TẠO CHAT ***********************
 
 # --- Hàm tính toán chính (Sử dụng Caching để Tối ưu hiệu suất) ---
 @st.cache_data
@@ -57,6 +87,7 @@ def process_financial_data(df):
 def get_ai_analysis(data_for_ai, api_key):
     """Gửi dữ liệu phân tích đến Gemini API và nhận nhận xét."""
     try:
+        # Sử dụng API Key truyền vào để tạo Client
         client = genai.Client(api_key=api_key)
         model_name = 'gemini-2.5-flash' 
 
@@ -125,25 +156,29 @@ if uploaded_file is not None:
                 no_ngan_han_N_1 = df_processed[df_processed['Chỉ tiêu'].str.contains('NỢ NGẮN HẠN', case=False, na=False)]['Năm trước'].iloc[0]
 
                 # Tính toán
-                thanh_toan_hien_hanh_N = tsnh_n / no_ngan_han_N
-                thanh_toan_hien_hanh_N_1 = tsnh_n_1 / no_ngan_han_N_1
+                thanh_toan_hien_hanh_N = tsnh_n / no_ngan_han_N if no_ngan_han_N != 0 else float('inf')
+                thanh_toan_hien_hanh_N_1 = tsnh_n_1 / no_ngan_han_N_1 if no_ngan_han_N_1 != 0 else float('inf')
                 
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric(
                         label="Chỉ số Thanh toán Hiện hành (Năm trước)",
-                        value=f"{thanh_toan_hien_hanh_N_1:.2f} lần"
+                        value=f"{thanh_toan_hien_hanh_N_1:.2f} lần" if thanh_toan_hien_hanh_N_1 != float('inf') else "Không xác định (Nợ = 0)"
                     )
                 with col2:
                     st.metric(
                         label="Chỉ số Thanh toán Hiện hành (Năm sau)",
-                        value=f"{thanh_toan_hien_hanh_N:.2f} lần",
-                        delta=f"{thanh_toan_hien_hanh_N - thanh_toan_hien_hanh_N_1:.2f}"
+                        value=f"{thanh_toan_hien_hanh_N:.2f} lần" if thanh_toan_hien_hanh_N != float('inf') else "Không xác định (Nợ = 0)",
+                        delta=f"{thanh_toan_hien_hanh_N - thanh_toan_hien_hanh_N_1:.2f}" if thanh_toan_hien_hanh_N != float('inf') and thanh_toan_hien_hanh_N_1 != float('inf') else None
                     )
                     
             except IndexError:
                  st.warning("Thiếu chỉ tiêu 'TÀI SẢN NGẮN HẠN' hoặc 'NỢ NGẮN HẠN' để tính chỉ số.")
                  thanh_toan_hien_hanh_N = "N/A" # Dùng để tránh lỗi ở Chức năng 5
+                 thanh_toan_hien_hanh_N_1 = "N/A"
+            except ZeroDivisionError:
+                 st.warning("Lỗi chia cho 0 khi tính Chỉ số Thanh toán Hiện hành (Có thể do Nợ ngắn hạn = 0).")
+                 thanh_toan_hien_hanh_N = "N/A"
                  thanh_toan_hien_hanh_N_1 = "N/A"
             
             # --- Chức năng 5: Nhận xét AI ---
@@ -152,29 +187,30 @@ if uploaded_file is not None:
             # Chuẩn bị dữ liệu để gửi cho AI
             data_for_ai = pd.DataFrame({
                 'Chỉ tiêu': [
-                    'Toàn bộ Bảng phân tích (dữ liệu thô)', 
-                    'Tăng trưởng Tài sản ngắn hạn (%)', 
-                    'Thanh toán hiện hành (N-1)', 
+                    'Toàn bộ Bảng phân tích (dữ liệu thô)',  
+                    'Tăng trưởng Tài sản ngắn hạn (%)',  
+                    'Thanh toán hiện hành (N-1)',  
                     'Thanh toán hiện hành (N)'
                 ],
                 'Giá trị': [
                     df_processed.to_markdown(index=False),
-                    f"{df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]['Tốc độ tăng trưởng (%)'].iloc[0]:.2f}%", 
-                    f"{thanh_toan_hien_hanh_N_1}", 
+                    f"{df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]['Tốc độ tăng trưởng (%)'].iloc[0]:.2f}%",  
+                    f"{thanh_toan_hien_hanh_N_1}",  
                     f"{thanh_toan_hien_hanh_N}"
                 ]
             }).to_markdown(index=False) 
 
             if st.button("Yêu cầu AI Phân tích"):
-                api_key = st.secrets.get("GEMINI_API_KEY") 
+                # api_key đã được kiểm tra ở đầu file, nhưng sử dụng st.secrets.get() ở đây để tuân thủ logic gốc
+                api_key_check = st.secrets.get("GEMINI_API_KEY") 
                 
-                if api_key:
+                if api_key_check:
                     with st.spinner('Đang gửi dữ liệu và chờ Gemini phân tích...'):
-                        ai_result = get_ai_analysis(data_for_ai, api_key)
+                        ai_result = get_ai_analysis(data_for_ai, api_key_check)
                         st.markdown("**Kết quả Phân tích từ Gemini AI:**")
                         st.info(ai_result)
                 else:
-                     st.error("Lỗi: Không tìm thấy Khóa API. Vui lòng cấu hình Khóa 'GEMINI_API_KEY' trong Streamlit Secrets.")
+                    st.error("Lỗi: Không tìm thấy Khóa API. Vui lòng cấu hình Khóa 'GEMINI_API_KEY' trong Streamlit Secrets.")
 
     except ValueError as ve:
         st.error(f"Lỗi cấu trúc dữ liệu: {ve}")
@@ -183,3 +219,43 @@ if uploaded_file is not None:
 
 else:
     st.info("Vui lòng tải lên file Excel để bắt đầu phân tích.")
+
+# ************************* BỔ SUNG: KHUNG CHAT HỎI ĐÁP *************************
+
+st.markdown("---")
+st.subheader("6. Chatbot Hỏi đáp Tài chính (Powered by Gemini)")
+
+# Hiển thị lịch sử chat
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Xử lý input từ người dùng
+if prompt := st.chat_input("Bạn muốn hỏi gì về báo cáo tài chính?"):
+    
+    # Kiểm tra trạng thái client
+    if client is None or "chat_session" not in st.session_state:
+        st.error("Chatbot không hoạt động do lỗi cấu hình API Key. Vui lòng kiểm tra Streamlit Secrets.")
+    else:
+        # Thêm tin nhắn người dùng vào lịch sử
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Gửi tin nhắn đến Gemini
+        with st.chat_message("assistant"):
+            with st.spinner("Đang suy nghĩ..."):
+                try:
+                    # Gửi tin nhắn qua Chat Session để giữ ngữ cảnh
+                    response = st.session_state.chat_session.send_message(prompt)
+                    st.markdown(response.text)
+                    
+                    # Thêm phản hồi của AI vào lịch sử
+                    st.session_state.messages.append({"role": "assistant", "content": response.text})
+                
+                except Exception as e:
+                    error_message = f"Lỗi Gemini Chat: {e}. Vui lòng thử lại."
+                    st.error(error_message)
+                    st.session_state.messages.append({"role": "assistant", "content": error_message})
+
+# *********************** KẾT THÚC BỔ SUNG KHUNG CHAT ***********************
